@@ -214,7 +214,23 @@ async def audit_video(request: AuditRequest):
         # }
 
 
-# ========== STEP 8: HEALTH CHECK ENDPOINT ==========
+# ========== STEP 8: HOME PAGE ==========
+@app.get("/")
+def home():
+    return {
+        "name": "Brand Guardian AI",
+        "version": "1.0.0",
+        "description": "AI-powered video compliance auditing pipeline",
+        "stack": "LangGraph · OpenAI · ChromaDB · FastAPI",
+        "endpoints": {
+            "docs":   "GET  /docs",
+            "health": "GET  /health",
+            "audit":  "POST /audit"
+        }
+    }
+
+
+# ========== STEP 9: HEALTH CHECK ENDPOINT ==========
 @app.get("/health")
 # ↑ GET request at http://localhost:8000/health
 def health_check():

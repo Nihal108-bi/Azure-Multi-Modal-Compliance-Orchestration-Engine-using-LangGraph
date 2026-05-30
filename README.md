@@ -1,333 +1,365 @@
-# Brand Guardian AI: Compliance QA Pipeline
+# Brand Guardian AI — Compliance QA Pipeline
 
-Brand Guardian AI is an AI-powered video compliance auditing pipeline that reviews YouTube content against regulatory and platform policy documents. It combines video ingestion, Azure Video Indexer transcription/OCR, Retrieval-Augmented Generation (RAG), and a LangGraph orchestration layer to produce structured pass/fail compliance reports.
+> An end-to-end AI pipeline that audits YouTube videos against brand and regulatory compliance rules, produces structured pass/fail reports, and exposes everything through a production-ready FastAPI service.
 
-The project is designed as a practical compliance automation system for marketing, creator, brand safety, and advertising review workflows. Instead of manually reviewing every video against lengthy policy PDFs, teams can submit a video URL and receive a structured audit containing violations, severity, category, and a final natural-language report.
+---
 
-## Project Overview & Value Proposition
+## What This Project Does
 
-Manual review of influencer videos, advertisements, and branded content is slow, inconsistent, and difficult to scale. This project demonstrates how an AI compliance pipeline can automate the first-pass review process by extracting video evidence, retrieving relevant rules, and applying an LLM-based auditor with a strict JSON output contract.
+Marketing teams, brand safety teams, and compliance officers spend hours manually reviewing influencer videos, sponsored content, and advertisements against lengthy policy documents. **Brand Guardian AI automates that first-pass review**.
 
-Core value delivered:
+Submit a YouTube URL → the system extracts the transcript, retrieves the relevant compliance rules from a knowledge base, and returns a structured JSON audit report flagging every violation with its category, severity, and a plain-English description.
 
-- Reduces review time for video content by automating transcript and OCR analysis.
-- Centralizes compliance logic around official policy and regulatory documents.
-- Produces recruiter-friendly, API-ready structured output for downstream systems.
-- Demonstrates production-oriented AI engineering patterns: graph orchestration, RAG, typed state, API validation, telemetry, and Azure service integration.
+**Built to demonstrate production AI engineering patterns** — not just a prompt demo.
 
-Core technology stack:
+---
 
-- Python 3.13
-- FastAPI and Pydantic for API serving and request/response validation
-- LangGraph for deterministic workflow orchestration
-- LangChain for LLM, embeddings, document loading, and vector search integrations
-- Azure OpenAI for chat completion and embeddings
-- Azure AI Search for vector retrieval over compliance documents
-- Azure Video Indexer for speech-to-text and OCR extraction
-- Azure Monitor / OpenTelemetry for observability
-- yt-dlp for YouTube video download
-- uv for dependency management and reproducible local execution
+## Tech Stack
 
-## Key Features
+| Layer | Technology |
+|---|---|
+| Orchestration | LangGraph (DAG-based stateful workflow) |
+| LLM | OpenAI GPT-4o-mini |
+| Embeddings | OpenAI text-embedding-3-small |
+| Vector Store | ChromaDB (local, persistent, zero-cost) |
+| Transcription | yt-dlp subtitle extraction → OpenAI Whisper API fallback |
+| API Framework | FastAPI + Pydantic v2 |
+| Observability | LangSmith tracing + Python logging |
+| Dependency Mgmt | uv (fast, reproducible) |
+| Runtime | Python 3.13 |
 
-- YouTube video audit intake through a FastAPI `POST /audit` endpoint.
-- Health check endpoint for local testing and deployment readiness.
-- LangGraph workflow with explicit `indexer -> auditor` execution stages.
-- Video ingestion using `yt-dlp`, followed by upload to Azure Video Indexer.
-- Azure Video Indexer polling until video processing is complete.
-- Transcript extraction from spoken audio.
-- OCR extraction from on-screen text.
-- RAG-based retrieval from compliance knowledge base PDFs stored in `backend/data`.
-- Azure AI Search vector index population script for regulatory and platform policy documents.
-- Azure OpenAI compliance auditor that returns strict JSON output.
-- Typed graph state using `TypedDict` and append-only list aggregation for results/errors.
-- Structured API response model containing session ID, video ID, status, final report, and violations.
-- Azure Monitor telemetry hook for request tracing and application monitoring.
-- CLI simulation entry point for running the workflow outside the API server.
-
-## Project Structure
-
-```text
-.
-|-- README.md                          # Project documentation
-|-- pyproject.toml                     # Python metadata and dependencies managed by uv
-|-- uv.lock                            # Locked dependency graph for reproducible installs
-|-- .python-version                    # Python runtime version: 3.13
-|-- .gitignore                         # Excludes virtualenv, .env, caches, build artifacts
-|-- main.py                            # CLI simulation entry point for the audit workflow
-|-- Project2_Langgraph_Architecture.png # Architecture reference image
-|-- azure_functions/
-|   `-- function_app.py                # Placeholder for future Azure Functions deployment
-`-- backend/
-    |-- Dockerfile                     # Placeholder for future container packaging
-    |-- data/
-    |   |-- 1001a-influencer-guide-508_1.pdf # FTC/influencer compliance source document
-    |   `-- youtube-ad-specs.pdf       # YouTube advertising policy/spec source document
-    |-- scripts/
-    |   `-- index_documents.py         # Loads PDFs, chunks text, embeds, and indexes into Azure AI Search
-    `-- src/
-        |-- api/
-        |   |-- __init__.py
-        |   |-- server.py              # FastAPI app, Pydantic models, /audit and /health endpoints
-        |   `-- telemetry.py           # Azure Monitor OpenTelemetry setup
-        |-- graph/
-        |   |-- __init__.py
-        |   |-- state.py               # Typed LangGraph state and compliance issue schema
-        |   |-- nodes.py               # Indexer and auditor node implementations
-        |   `-- workflow.py            # LangGraph DAG construction and compiled graph export
-        `-- services/
-            |-- __init__.py
-            `-- video_indexer.py       # Azure Video Indexer integration and YouTube download service
-```
+---
 
 ## System Architecture
 
 ```mermaid
 flowchart TD
-    Client[Client or Reviewer] -->|POST /audit with video_url| API[FastAPI API Server]
-    API -->|Validates request| Pydantic[Pydantic Models]
-    API -->|Invokes compiled graph| Graph[LangGraph Workflow]
+    Client(["👤 Client / Reviewer"])
+    API["FastAPI Server\n/audit  /health  /"]
+    Pydantic["Pydantic Validation\nAuditRequest → AuditResponse"]
+    Graph["LangGraph Workflow\nStateGraph"]
 
-    Graph --> Indexer[Indexer Node]
-    Indexer -->|Download video| YouTube[YouTube]
-    Indexer -->|Local MP4 upload| VideoIndexer[Azure Video Indexer]
-    VideoIndexer -->|Transcript and OCR insights| Indexer
+    subgraph Indexer ["🎬 Indexer Node"]
+        YT["YouTube URL"]
+        Sub["yt-dlp\nFree subtitle extraction"]
+        Whisper["OpenAI Whisper API\nFallback transcription"]
+        YT --> Sub
+        Sub -- "No subtitles?" --> Whisper
+    end
 
-    Graph --> Auditor[Auditor Node]
-    Auditor -->|Builds query from transcript and OCR| Search[Azure AI Search Vector Index]
-    Search -->|Relevant compliance rules| Auditor
-    Auditor -->|Prompt with rules and video evidence| AzureOpenAI[Azure OpenAI Chat Model]
-    AzureOpenAI -->|Strict JSON audit result| Auditor
+    subgraph Auditor ["🔍 Auditor Node"]
+        Embed["OpenAI Embeddings\ntext-embedding-3-small"]
+        Chroma["ChromaDB\nLocal vector store"]
+        LLM["OpenAI GPT-4o-mini\nCompliance audit"]
+        Embed --> Chroma
+        Chroma -- "Top-k relevant rules" --> LLM
+    end
 
-    Auditor -->|Final graph state| Graph
-    Graph -->|Status, report, violations| API
-    API -->|AuditResponse JSON| Client
+    subgraph KnowledgeBase ["📚 Knowledge Base (one-time setup)"]
+        PDFs["Compliance PDFs\nbackend/data/"]
+        IndexScript["index_documents.py"]
+        PDFs --> IndexScript --> Embed
+    end
 
-    Docs[Compliance PDFs in backend/data] --> IndexScript[index_documents.py]
-    IndexScript -->|PDF load, chunk, embed| Embeddings[Azure OpenAI Embeddings]
-    Embeddings -->|Vectors and metadata| Search
-
-    API -->|Optional telemetry| Monitor[Azure Monitor / Application Insights]
+    Client -- "POST /audit\n{video_url}" --> API
+    API --> Pydantic --> Graph
+    Graph --> Indexer
+    Indexer -- "transcript, ocr_text" --> Auditor
+    Graph -- "status · report · violations" --> API
+    API -- "AuditResponse JSON" --> Client
 ```
 
-## Data / Code Flow Diagram
+---
+
+## Data Flow (Sequence Diagram)
 
 ```mermaid
 sequenceDiagram
     autonumber
-    participant Client as Client
+    participant Client as 👤 Client
     participant API as FastAPI /audit
-    participant Graph as LangGraph App
-    participant Indexer as index_video_node
-    participant VI as Azure Video Indexer
-    participant Search as Azure AI Search
-    participant LLM as Azure OpenAI
+    participant Graph as LangGraph
+    participant Indexer as Indexer Node
+    participant YT as yt-dlp
+    participant Whisper as OpenAI Whisper
+    participant Chroma as ChromaDB
+    participant LLM as OpenAI GPT-4o-mini
 
-    Client->>API: POST /audit {"video_url": "..."}
-    API->>API: Generate session_id and video_id
-    API->>Graph: invoke(initial_inputs)
-    Graph->>Indexer: Run indexer node
-    Indexer->>Indexer: Download YouTube video with yt-dlp
-    Indexer->>VI: Upload local video file
-    Indexer->>VI: Poll processing status
-    VI-->>Indexer: Return transcript, OCR, metadata
-    Indexer-->>Graph: Update state with extracted evidence
-    Graph->>Search: Similarity search using transcript + OCR
-    Search-->>Graph: Return top compliance rule chunks
-    Graph->>LLM: Send rules, transcript, OCR, and strict JSON instructions
-    LLM-->>Graph: Return compliance_results, status, final_report
-    Graph-->>API: Return final state
+    Client->>API: POST /audit {"video_url": "https://youtu.be/..."}
+    API->>API: Generate session_id + video_id
+    API->>Graph: invoke(initial_state)
+    Graph->>Indexer: run index_video_node
+    Indexer->>YT: Extract auto-generated subtitles (free)
+    alt Subtitles available
+        YT-->>Indexer: VTT transcript text
+    else No subtitles
+        Indexer->>YT: Download video file
+        Indexer->>Whisper: POST audio for transcription
+        Whisper-->>Indexer: Transcript text
+    end
+    Indexer-->>Graph: {transcript, ocr_text, metadata}
+    Graph->>Chroma: similarity_search(transcript, k=3)
+    Chroma-->>Graph: Top compliance rule chunks
+    Graph->>LLM: System prompt (rules) + transcript + OCR
+    LLM-->>Graph: {compliance_results, status, final_report}
+    Graph-->>API: Final state
     API-->>Client: AuditResponse JSON
 ```
 
-## CI/CD & Deployment Pipeline
+---
 
-There is no active CI/CD workflow checked into the repository at this time. The current implementation is structured for cloud deployment but does not yet include a completed deployment pipeline.
+## Live Example Output
 
-Current deployment-related assets:
+### CLI Run
 
-- `backend/Dockerfile` exists but is currently empty.
-- `azure_functions/function_app.py` exists but is currently empty.
-- Azure Monitor telemetry support is implemented in `backend/src/api/telemetry.py`.
-- The FastAPI service can be run locally with Uvicorn.
-- Azure service integrations are implemented through environment variables and Azure SDK authentication.
+```
+(complainceqapipeline) PS D:\Project_75\ComplainceQAPipeline> uv run python main.py
 
-Recommended production pipeline:
+INFO:brand-guardian-runner:Starting Audit Session: 6be8b194-554b-4273-9efa-49765fa08fe5
 
-1. Build a backend container image from the FastAPI app.
-2. Run linting and tests in GitHub Actions or Azure DevOps.
-3. Push the image to Azure Container Registry.
-4. Deploy to Azure Container Apps, Azure App Service, or AKS.
-5. Store secrets in Azure Key Vault or managed service configuration.
-6. Enable managed identity for Azure Video Indexer, Azure AI Search, and Azure OpenAI access where possible.
-7. Stream application telemetry to Application Insights through `APPLICATIONINSIGHTS_CONNECTION_STRING`.
+--- 1. Input Payload: INITIALIZING WORKFLOW ---
+{
+  "video_url": "https://youtu.be/dT7S75eYhcQ",
+  "video_id": "vid_6be8b194",
+  "compliance_results": [],
+  "errors": []
+}
 
-## Getting Started & Installation
+INFO:brand-guardian:--- [Node: Indexer] Processing: https://youtu.be/dT7S75eYhcQ ---
+INFO:video-indexer:Attempting free subtitle extraction from YouTube...
+INFO:video-indexer:Subtitles extracted successfully (free).
+INFO:brand-guardian:--- [Node: Indexer] Extraction Complete ---
+INFO:brand-guardian:--- [Node: Auditor] Querying Knowledge Base & LLM ---
+INFO:httpx:HTTP Request: POST https://api.openai.com/v1/embeddings "HTTP/1.1 200 OK"
+INFO:httpx:HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
+
+--- 2. WORKFLOW EXECUTION COMPLETE ---
+
+=== COMPLIANCE AUDIT REPORT ===
+Video ID:    vid_6be8b194
+Status:      FAIL
+
+[ VIOLATIONS DETECTED ]
+- [CRITICAL] Claim Validation: The video promotes Neutrogena Ultra Shear sunscreen
+  without a clear disclosure of the sponsorship or advertisement, violating the
+  requirement for clear language indicating the nature of the content.
+
+[ FINAL SUMMARY ]
+The video fails to include a proper disclosure indicating that it is an advertisement
+for Neutrogena, which is a critical violation of compliance rules.
+```
+
+### API Server Run
+
+```
+(complainceqapipeline) PS D:\Project_75\ComplainceQAPipeline> uv run uvicorn backend.src.api.server:app --reload
+
+INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
+INFO:     Started reloader process [10608] using WatchFiles
+INFO:     Application startup complete.
+INFO:     127.0.0.1:59875 - "GET / HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59875 - "GET /docs HTTP/1.1" 200 OK
+```
+
+**Home page response (`GET /`):**
+```json
+{
+  "name": "Brand Guardian AI",
+  "version": "1.0.0",
+  "description": "AI-powered video compliance auditing pipeline",
+  "stack": "LangGraph · OpenAI · ChromaDB · FastAPI",
+  "endpoints": {
+    "docs":   "GET  /docs",
+    "health": "GET  /health",
+    "audit":  "POST /audit"
+  }
+}
+```
+
+---
+
+## Project Structure
+
+```
+ComplainceQAPipeline/
+├── main.py                          # CLI entry point — runs audit without starting the server
+├── pyproject.toml                   # Dependencies managed by uv
+├── uv.lock                          # Locked dependency graph for reproducible installs
+├── .python-version                  # Python 3.13
+├── .env                             # Local secrets (gitignored)
+│
+├── backend/
+│   ├── data/
+│   │   ├── chroma_db/               # ChromaDB local vector store (gitignored, auto-created)
+│   │   ├── 1001a-influencer-guide-508_1.pdf   # FTC influencer compliance source
+│   │   └── youtube-ad-specs.pdf     # YouTube advertising policy source
+│   │
+│   ├── scripts/
+│   │   └── index_documents.py       # One-time setup: loads PDFs → embeds → stores in ChromaDB
+│   │
+│   └── src/
+│       ├── api/
+│       │   ├── server.py            # FastAPI app: /, /health, POST /audit endpoints
+│       │   └── telemetry.py         # Logging setup
+│       ├── graph/
+│       │   ├── state.py             # VideoAuditState TypedDict + ComplianceIssue schema
+│       │   ├── nodes.py             # Indexer node (transcript) + Auditor node (RAG + LLM)
+│       │   └── workflow.py          # LangGraph DAG: indexer → auditor → END
+│       └── services/
+│           └── video_indexer.py     # YouTube subtitle extraction + Whisper API fallback
+```
+
+---
+
+## Getting Started
 
 ### Prerequisites
 
 - Python 3.13
-- uv package manager
-- Azure subscription with access to:
-  - Azure OpenAI
-  - Azure AI Search
-  - Azure Video Indexer
-  - Azure Monitor / Application Insights, optional
-- Azure CLI login or another credential supported by `DefaultAzureCredential`
+- [uv](https://docs.astral.sh/uv/) package manager
+- An **OpenAI API key** (only external paid service required)
 
-### 1. Clone the repository
+No Azure account. No cloud subscriptions. No service deployments.
+
+### 1. Clone & install
 
 ```bash
 git clone <your-repository-url>
 cd ComplainceQAPipeline
-```
-
-### 2. Install dependencies
-
-```bash
 uv sync
 ```
 
-### 3. Configure environment variables
+### 2. Configure environment variables
 
-Create a `.env` file in the project root. The repository already excludes `.env` through `.gitignore`, so credentials should remain local.
+Create a `.env` file in the project root:
 
 ```env
-AZURE_OPENAI_ENDPOINT=
-AZURE_OPENAI_API_KEY=
-AZURE_OPENAI_API_VERSION=
-AZURE_OPENAI_CHAT_DEPLOYMENT=
-AZURE_OPENAI_EMBEDDING_DEPLOYMENT=text-embedding-3-small
+# Required
+OPENAI_API_KEY=sk-proj-...
+OPENAI_CHAT_MODEL=gpt-4o-mini
+OPENAI_EMBEDDING_MODEL=text-embedding-3-small
 
-AZURE_SEARCH_ENDPOINT=
-AZURE_SEARCH_API_KEY=
-AZURE_SEARCH_INDEX_NAME=
+# ChromaDB (local — no setup needed)
+CHROMA_PERSIST_DIR=./backend/data/chroma_db
+CHROMA_COLLECTION_NAME=brand-compliance-rules
 
-AZURE_SUBSCRIPTION_ID=
-AZURE_RESOURCE_GROUP=
-AZURE_VI_ACCOUNT_ID=
-AZURE_VI_LOCATION=
-AZURE_VI_NAME=
-
-APPLICATIONINSIGHTS_CONNECTION_STRING=
-
-LANGCHAIN_TRACING_V2=
-LANGCHAIN_ENDPOINT=
-LANGCHAIN_API_KEY=
-LANGCHAIN_PROJECT=
+# Optional: LangSmith tracing
+LANGCHAIN_TRACING_V2=true
+LANGCHAIN_ENDPOINT=https://api.smith.langchain.com
+LANGCHAIN_API_KEY=lsv2_pt_...
+LANGCHAIN_PROJECT=brand-guardian-prod
 ```
 
-Important: `VideoIndexerService` expects `AZURE_RESOURCE_GROUP`. If your local `.env` uses a misspelled key such as `AXURE_RESOURCE_GROUP`, rename it to `AZURE_RESOURCE_GROUP`.
-
-Authenticate with Azure if running locally:
+### 3. Index the compliance knowledge base (one-time)
 
 ```bash
-az login
+uv run python -m backend.scripts.index_documents
 ```
 
-### 4. Build the compliance knowledge base
+This reads all PDFs in `backend/data/`, splits them into chunks, embeds them with OpenAI, and stores them in a local ChromaDB collection. Run again whenever you add new policy documents.
 
-The RAG auditor expects regulatory and policy documents to be indexed into Azure AI Search before audits are run.
-
-```bash
-uv run python backend/scripts/index_documents.py
-```
-
-This script:
-
-- Loads PDFs from `backend/data`.
-- Splits them into overlapping chunks.
-- Generates embeddings with Azure OpenAI.
-- Uploads the chunks and vectors into Azure AI Search.
-
-### 5. Run the FastAPI server
+### 4. Run the API server
 
 ```bash
 uv run uvicorn backend.src.api.server:app --reload
 ```
 
-Local URLs:
+| URL | Description |
+|---|---|
+| `http://localhost:8000/` | Home — API info and available endpoints |
+| `http://localhost:8000/docs` | Interactive Swagger UI |
+| `http://localhost:8000/health` | Health check |
+| `POST http://localhost:8000/audit` | Run a compliance audit |
 
-- API root docs: `http://localhost:8000/docs`
-- Health check: `http://localhost:8000/health`
-- Audit endpoint: `POST http://localhost:8000/audit`
-
-### 6. Run the CLI simulation
+### 5. Run the CLI simulation
 
 ```bash
 uv run python main.py
 ```
 
-The CLI path invokes the same LangGraph workflow as the API, using a hardcoded sample YouTube URL in `main.py`.
+Runs the full workflow end-to-end in the terminal without starting the server. Uses the hardcoded sample YouTube URL in `main.py`.
 
-## API Endpoints
+---
 
-| Method | Endpoint | Description | Request Body | Response |
-|---|---|---|---|---|
-| `GET` | `/health` | Confirms the API service is running. | None | `{"status": "healthy", "service": "Brand Guardian AI"}` |
-| `POST` | `/audit` | Runs a complete video compliance audit. | `{"video_url": "https://youtu.be/..."}` | `session_id`, `video_id`, `status`, `final_report`, `compliance_results` |
+## API Reference
 
-Example audit request:
+### `POST /audit`
 
-```bash
-curl -X POST "http://localhost:8000/audit" \
-  -H "Content-Type: application/json" \
-  -d "{\"video_url\":\"https://youtu.be/example\"}"
+**Request:**
+```json
+{ "video_url": "https://youtu.be/dT7S75eYhcQ" }
 ```
 
-Example response shape:
-
+**Response:**
 ```json
 {
-  "session_id": "ce6c43bb-c71a-4f16-a377-8b493502fee2",
-  "video_id": "vid_ce6c43bb",
+  "session_id": "6be8b194-554b-4273-9efa-49765fa08fe5",
+  "video_id": "vid_6be8b194",
   "status": "FAIL",
-  "final_report": "The video contains compliance issues related to unsupported claims.",
+  "final_report": "The video fails to include a proper disclosure indicating that it is an advertisement for Neutrogena, which is a critical violation of compliance rules.",
   "compliance_results": [
     {
       "category": "Claim Validation",
       "severity": "CRITICAL",
-      "description": "The video makes an absolute performance claim without supporting disclosure."
+      "description": "The video promotes Neutrogena Ultra Shear sunscreen without a clear disclosure of the sponsorship or advertisement."
     }
   ]
 }
 ```
 
-## Core Modules
+**cURL:**
+```bash
+curl -X POST "http://localhost:8000/audit" \
+  -H "Content-Type: application/json" \
+  -d '{"video_url": "https://youtu.be/dT7S75eYhcQ"}'
+```
 
-| Module | File | Responsibility |
+### `GET /health`
+
+```json
+{ "status": "healthy", "service": "Brand Guardian AI" }
+```
+
+---
+
+## Core Module Summary
+
+| Module | File | What It Does |
 |---|---|---|
-| API Server | `backend/src/api/server.py` | Exposes FastAPI app, validates requests, invokes LangGraph, returns structured audit responses. |
-| Telemetry | `backend/src/api/telemetry.py` | Configures Azure Monitor OpenTelemetry when an Application Insights connection string is present. |
-| Workflow | `backend/src/graph/workflow.py` | Builds and compiles the LangGraph state machine. |
-| State Schema | `backend/src/graph/state.py` | Defines the `VideoAuditState` and `ComplianceIssue` structures shared across nodes. |
-| Indexer Node | `backend/src/graph/nodes.py` | Downloads video, uploads it to Azure Video Indexer, waits for processing, extracts transcript/OCR. |
-| Auditor Node | `backend/src/graph/nodes.py` | Retrieves compliance rules from Azure AI Search and uses Azure OpenAI to produce JSON audit output. |
-| Video Indexer Service | `backend/src/services/video_indexer.py` | Encapsulates Azure Video Indexer authentication, upload, polling, and data extraction logic. |
-| Document Indexing | `backend/scripts/index_documents.py` | Converts policy PDFs into searchable vector chunks in Azure AI Search. |
-| CLI Runner | `main.py` | Runs a local end-to-end audit simulation without starting the API server. |
+| **API Server** | `backend/src/api/server.py` | FastAPI app, Pydantic validation, route handlers |
+| **Workflow** | `backend/src/graph/workflow.py` | Compiles the LangGraph DAG |
+| **State Schema** | `backend/src/graph/state.py` | Typed shared state across all graph nodes |
+| **Indexer Node** | `backend/src/graph/nodes.py` | Extracts transcript via subtitles or Whisper API |
+| **Auditor Node** | `backend/src/graph/nodes.py` | RAG retrieval + LLM audit → structured JSON |
+| **Video Service** | `backend/src/services/video_indexer.py` | yt-dlp subtitle extraction + Whisper fallback |
+| **Indexing Script** | `backend/scripts/index_documents.py` | PDF → chunks → embeddings → ChromaDB |
+| **CLI Runner** | `main.py` | End-to-end test without starting the server |
 
-## Compliance Knowledge Base
+---
 
-The repository includes two source PDFs under `backend/data`:
+## AI Engineering Patterns Demonstrated
 
-- `1001a-influencer-guide-508_1.pdf`
-- `youtube-ad-specs.pdf`
+This project goes beyond a simple chatbot or API wrapper. It demonstrates:
 
-These documents are used to seed the Azure AI Search vector index. During an audit, the system combines the video transcript and OCR text into a query, retrieves the most relevant policy chunks, and injects those rules into the auditor prompt.
+- **Graph-based orchestration** with LangGraph — deterministic, inspectable, and easy to extend with new nodes (e.g., a scoring node, a human-review node)
+- **RAG (Retrieval-Augmented Generation)** — the LLM never hallucinates rules because all rules come from real indexed documents
+- **Typed state management** — `TypedDict` + `Annotated[List, operator.add]` for safe multi-node state mutation
+- **Structured LLM output** — strict JSON contract enforced in the system prompt with post-processing fallback
+- **Cost-aware design** — free YouTube subtitle extraction is tried first; paid Whisper API is only called when necessary
+- **Separation of concerns** — video service, graph nodes, API, and indexing are independently testable units
+- **API-first design** — Pydantic v2 models for both request validation and response serialization
 
-## Observability
+---
 
-The API initializes telemetry through `setup_telemetry()` before the FastAPI application is created. If `APPLICATIONINSIGHTS_CONNECTION_STRING` is configured, Azure Monitor captures request traces, errors, logs, and dependency signals. If the variable is absent, telemetry is skipped without preventing the app from running.
+## Known Limitations
 
-## Current Limitations
+- The audit endpoint is synchronous; long videos may time out in production (fix: async job queue with a status-polling endpoint)
+- OCR from video frames is not currently implemented (subtitle + Whisper covers spoken content; on-screen text requires frame extraction)
+- No automated test suite yet
+- The Dockerfile is a placeholder — container packaging is the next deployment step
 
-- The Dockerfile and Azure Functions entry point are placeholders and need implementation before container or serverless deployment.
-- No automated test suite is currently present in the repository.
-- The audit endpoint invokes the graph synchronously; long videos may require an async job queue or background task model in production.
-- `temp_audit_video.mp4` is a generated local artifact and should not be committed.
-- The auditor depends on the LLM returning parseable JSON. The code strips Markdown code fences, but production systems should add stronger schema validation and retry logic.
+---
 
-## Why This Project Matters
+## Why This Project
 
-This project showcases applied AI engineering beyond a simple prompt demo. It demonstrates how to connect multimodal evidence extraction, vector retrieval, graph-based orchestration, typed API contracts, and cloud observability into a complete compliance QA workflow. For technical recruiters and hiring managers, it highlights practical experience with production-style LLM systems, Azure AI services, backend API design, and end-to-end automation.
+Compliance review is a real, underserved workflow in marketing, fintech, healthcare, and creator economy platforms. This project shows how to build something genuinely useful with modern AI tooling — combining orchestration, retrieval, structured output, and API design into a pipeline that a real team could adopt and extend.

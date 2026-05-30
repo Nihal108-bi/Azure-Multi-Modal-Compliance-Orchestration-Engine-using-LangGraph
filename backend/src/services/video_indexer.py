@@ -1,63 +1,28 @@
 import os
-import time
+import re
 import logging
-import requests
-import yt_dlp  
-from azure.identity import DefaultAzureCredential
+import yt_dlp
+from openai import OpenAI
 
 logger = logging.getLogger("video-indexer")
 
+
 class VideoIndexerService:
     def __init__(self):
-        self.account_id = os.getenv("AZURE_VI_ACCOUNT_ID")
-        self.location = os.getenv("AZURE_VI_LOCATION")
-        self.subscription_id = os.getenv("AZURE_SUBSCRIPTION_ID")
-        self.resource_group = os.getenv("AZURE_RESOURCE_GROUP")
-        self.vi_name = os.getenv("AZURE_VI_NAME", "project-brand-guardian-001")
-        self.credential = DefaultAzureCredential()
+        self.openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-    def get_access_token(self):
-        """Generates an ARM Access Token."""
-        try:
-            token_object = self.credential.get_token("https://management.azure.com/.default")
-            return token_object.token
-        except Exception as e:
-            logger.error(f"Failed to get Azure Token: {e}")
-            raise
-
-    def get_account_token(self, arm_access_token):
-        """Exchanges ARM token for Video Indexer Account Token."""
-        url = (
-            f"https://management.azure.com/subscriptions/{self.subscription_id}"
-            f"/resourceGroups/{self.resource_group}"
-            f"/providers/Microsoft.VideoIndexer/accounts/{self.vi_name}"
-            f"/generateAccessToken?api-version=2024-01-01"
-        )
-        headers = {"Authorization": f"Bearer {arm_access_token}"}
-        payload = {"permissionType": "Contributor", "scope": "Account"}
-        response = requests.post(url, headers=headers, json=payload)
-        if response.status_code != 200:
-            raise Exception(f"Failed to get VI Account Token: {response.text}")
-        return response.json().get("accessToken")
-
-    # --- NEW FUNCTION: Download from YouTube ---
     def download_youtube_video(self, url, output_path="temp_video.mp4"):
-        """Downloads a YouTube video to a local file."""
+        """Downloads a YouTube video (prefer small format to stay under Whisper 25MB limit)."""
         logger.info(f"Downloading YouTube video: {url}")
-        
         ydl_opts = {
-         'format': 'best',
-         'outtmpl': output_path, # output template
-         'quiet': False,
-         'no_warnings': False,
-    # Add these options:
-         'extractor_args': {'youtube': {'player_client': ['android', 'web']}},
-         'http_headers': {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-    }
-
-}
-        
+            'format': 'best[filesize<24M]/worst[ext=mp4]/best',
+            'outtmpl': output_path,
+            'quiet': False,
+            'extractor_args': {'youtube': {'player_client': ['android', 'web']}},
+            'http_headers': {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            }
+        }
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 ydl.download([url])
@@ -66,74 +31,88 @@ class VideoIndexerService:
         except Exception as e:
             raise Exception(f"YouTube Download Failed: {str(e)}")
 
-    # --- UPDATED FUNCTION: Upload Local File ---
-    def upload_video(self, video_path, video_name):
-        """Uploads a LOCAL FILE to Azure Video Indexer."""
-        arm_token = self.get_access_token()
-        vi_token = self.get_account_token(arm_token)
-
-        api_url = f"https://api.videoindexer.ai/{self.location}/Accounts/{self.account_id}/Videos"
-        
-        params = {
-            "accessToken": vi_token,
-            "name": video_name,
-            "privacy": "Private",
-            "indexingPreset": "Default",
-            # We removed "videoUrl" because we are sending a file payload instead
+    def get_youtube_transcript(self, url):
+        """
+        Fetches auto-generated subtitles from YouTube via yt-dlp.
+        Free — no API key required.
+        Returns cleaned transcript text, or None if unavailable.
+        """
+        logger.info("Attempting free subtitle extraction from YouTube...")
+        subtitle_base = "temp_subtitle"
+        ydl_opts = {
+            'writeautomaticsub': True,
+            'writesubtitles': True,
+            'subtitleslangs': ['en', 'en-US'],
+            'subtitlesformat': 'vtt',
+            'skip_download': True,
+            'quiet': True,
+            'outtmpl': subtitle_base,
         }
-        
-        logger.info(f"Uploading file {video_path} to Azure...")
-        
-        # Open the file in binary mode and stream it to Azure
-        with open(video_path, 'rb') as video_file:
-            files = {'file': video_file}
-            response = requests.post(api_url, params=params, files=files)
-        
-        if response.status_code != 200:
-            raise Exception(f"Azure Upload Failed: {response.text}")
-            
-        return response.json().get("id")
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.download([url])
 
-    def wait_for_processing(self, video_id):
-        """Polls status until complete."""
-        logger.info(f"Waiting for video {video_id} to process...")
-        while True:
-            arm_token = self.get_access_token()
-            vi_token = self.get_account_token(arm_token)
-            
-            url = f"https://api.videoindexer.ai/{self.location}/Accounts/{self.account_id}/Videos/{video_id}/Index"
-            params = {"accessToken": vi_token}
-            response = requests.get(url, params=params)
-            data = response.json()
-            
-            state = data.get("state")
-            if state == "Processed":
-                return data
-            elif state == "Failed":
-                raise Exception("Video Indexing Failed in Azure.")
-            elif state == "Quarantined":
-                raise Exception("Video Quarantined (Copyright/Content Policy Violation).")
-            
-            logger.info(f"Status: {state}... waiting 30s")
-            time.sleep(30)
+            for ext in ['.en.vtt', '.en-US.vtt']:
+                subtitle_file = subtitle_base + ext
+                if os.path.exists(subtitle_file):
+                    with open(subtitle_file, 'r', encoding='utf-8') as f:
+                        raw = f.read()
+                    os.remove(subtitle_file)
+                    # Strip VTT timestamps, tags, and blank lines
+                    text = re.sub(r'\d{2}:\d{2}:\d{2}\.\d{3} --> [\d:.  \w]+\n', '', raw)
+                    text = re.sub(r'WEBVTT.*?\n', '', text)
+                    text = re.sub(r'<[^>]+>', '', text)
+                    text = re.sub(r'\n+', ' ', text).strip()
+                    if len(text) > 50:
+                        logger.info("Subtitles extracted successfully (free).")
+                        return text
+        except Exception as e:
+            logger.warning(f"Subtitle extraction failed: {e}")
 
-    def extract_data(self, vi_json):
-        """Parses the JSON into our State format."""
-        transcript_lines = []
-        for v in vi_json.get("videos", []):
-            for insight in v.get("insights", {}).get("transcript", []):
-                transcript_lines.append(insight.get("text"))
-        
-        ocr_lines = []
-        for v in vi_json.get("videos", []):
-            for insight in v.get("insights", {}).get("ocr", []):
-                ocr_lines.append(insight.get("text"))
-                
+        return None
+
+    def transcribe_with_whisper(self, video_path):
+        """
+        Transcribes audio from a local video file using OpenAI Whisper API.
+        Used as a fallback when YouTube subtitles are unavailable.
+        File must be under 25MB.
+        """
+        logger.info("Transcribing with OpenAI Whisper API...")
+        file_size_mb = os.path.getsize(video_path) / (1024 * 1024)
+        if file_size_mb > 24:
+            raise Exception(
+                f"Video file ({file_size_mb:.1f}MB) exceeds Whisper's 25MB limit. "
+                "Use a shorter video or ensure YouTube subtitles are enabled."
+            )
+        with open(video_path, 'rb') as f:
+            transcript = self.openai_client.audio.transcriptions.create(
+                model="whisper-1",
+                file=f,
+                response_format="text"
+            )
+        logger.info("Whisper transcription complete.")
+        return transcript
+
+    def process_video(self, url):
+        """
+        Main method: tries free YouTube subtitle extraction first,
+        falls back to OpenAI Whisper API if subtitles are unavailable.
+        """
+        # Step 1: Free subtitle extraction
+        transcript = self.get_youtube_transcript(url)
+
+        # Step 2: Paid Whisper fallback
+        if not transcript:
+            logger.info("No subtitles found. Falling back to Whisper transcription...")
+            local_path = self.download_youtube_video(url, output_path="temp_audit_video.mp4")
+            try:
+                transcript = self.transcribe_with_whisper(local_path)
+            finally:
+                if os.path.exists(local_path):
+                    os.remove(local_path)
+
         return {
-            "transcript": " ".join(transcript_lines),
-            "ocr_text": ocr_lines,
-            "video_metadata": {
-                "duration": vi_json.get("summarizedInsights", {}).get("duration", {}).get("seconds"),
-                "platform": "youtube"
-            }
+            "transcript": transcript or "",
+            "ocr_text": [],
+            "video_metadata": {"platform": "youtube"}
         }

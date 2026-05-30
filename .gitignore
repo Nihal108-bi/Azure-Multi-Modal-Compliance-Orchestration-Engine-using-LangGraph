@@ -9,3 +9,14 @@ wheels/
 # Virtual environments
 .venv
 .env
+
+# Claude Code internal files
+.claude/
+
+# ChromaDB local vector store
+backend/data/chroma_db/
+
+# Temporary video/audio files from processing
+temp_*.mp4
+temp_*.mp3
+temp_subtitle.*
